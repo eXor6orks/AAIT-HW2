@@ -15,7 +15,7 @@ CSV_PATH = "task2/train_data/annotations.csv" # Ton chemin
 IMG_FOLDER = "task2/train_data/" # Dossier contenant les images
 OUTPUT_CSV = "task2/train_data/clean_annotations.csv"
 SAVE_DIR = "checkpoints/task2_cleaned_training"
-NOISE_RATE = 0.3
+NOISE_RATE = 0.2
 KEEP_RATIO = 1 - NOISE_RATE  # On garde ~60% des données les plus sûres
 
 from sklearn.manifold import TSNE
@@ -62,79 +62,83 @@ class FeatureDataset(Dataset):
         img = self.transform(img)
         return img, label, idx  # On retourne l'index pour filtrer le DataFrame
 
-# 2. Modèle Extracteur (ResNet50 puissant)
-print("Load extractor...")
-extractor = models.resnet50(weights=models.ResNet50_Weights.DEFAULT).to(DEVICE)
-extractor.fc = nn.Identity() # On enlève la classification pour avoir les vecteurs (2048 dim)
-extractor.eval()
+def main():
+    # 2. Modèle Extracteur (ResNet50 puissant)
+    print("Load extractor...")
+    extractor = models.resnet50(weights=models.ResNet50_Weights.DEFAULT).to(DEVICE)
+    extractor.fc = nn.Identity() # On enlève la classification pour avoir les vecteurs (2048 dim)
+    extractor.eval()
 
-# 3. Extraction
-dataset = FeatureDataset(CSV_PATH)
-loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
+    # 3. Extraction
+    dataset = FeatureDataset(CSV_PATH)
+    loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
 
-all_feats = []
-all_labels = []
-all_indices = []
+    all_feats = []
+    all_labels = []
+    all_indices = []
 
-print("Extracting features...")
-with torch.no_grad():
-    for imgs, lbls, idxs in tqdm(loader):
-        imgs = imgs.to(DEVICE)
-        # Extraction
-        feats = extractor(imgs)
-        # Normalisation L2 (Crucial pour la similarité cosinus !)
-        feats = torch.nn.functional.normalize(feats, p=2, dim=1)
+    print("Extracting features...")
+    with torch.no_grad():
+        for imgs, lbls, idxs in tqdm(loader):
+            imgs = imgs.to(DEVICE)
+            # Extraction
+            feats = extractor(imgs)
+            # Normalisation L2 (Crucial pour la similarité cosinus !)
+            feats = torch.nn.functional.normalize(feats, p=2, dim=1)
+            
+            all_feats.append(feats.cpu().numpy())
+            all_labels.extend(lbls.numpy())
+            all_indices.extend(idxs.numpy())
+
+    all_feats = np.concatenate(all_feats)
+    all_labels = np.array(all_labels)
+    all_indices = np.array(all_indices)
+
+    # 4. Filtrage : On garde les points proches du centre de leur classe
+    print("Filtering noisy labels...")
+    final_indices = []
+
+    for c in range(100): # 100 classes
+        # Récupérer tous les samples de la classe c
+        class_mask = (all_labels == c)
+        class_idxs = all_indices[class_mask]
+        class_feats = all_feats[class_mask]
+
+        if len(class_feats) == 0: continue
+
+        # Calculer le "Centre" de la classe (Prototype)
+        center = np.mean(class_feats, axis=0, keepdims=True)
+        center = center / np.linalg.norm(center) # Re-normaliser le centre
+
+        # Calculer la similarité de chaque image avec le centre
+        # Plus c'est proche de 1, plus l'image est "typique" de la classe
+        similarities = cosine_similarity(class_feats, center).flatten()
+
+        # On trie du plus similaire au moins similaire
+        sorted_local_idx = np.argsort(similarities)[::-1] # Descending
+
+        # On ne garde que le TOP (1 - noise_rate)
+        # Ex: si 100 images, 40% bruit -> on garde les 60 meilleures
+        n_keep = int(len(class_feats) * KEEP_RATIO)
+        # Sécurité: garder au moins 5 images par classe
+        n_keep = max(n_keep, 5) 
         
-        all_feats.append(feats.cpu().numpy())
-        all_labels.extend(lbls.numpy())
-        all_indices.extend(idxs.numpy())
+        # Récupérer les index globaux des meilleurs samples
+        best_local_idxs = sorted_local_idx[:n_keep]
+        best_global_idxs = class_idxs[best_local_idxs]
+        
+        final_indices.extend(best_global_idxs)
 
-all_feats = np.concatenate(all_feats)
-all_labels = np.array(all_labels)
-all_indices = np.array(all_indices)
+    # 5. Sauvegarde
+    df_orig = pd.read_csv(CSV_PATH)
+    df_clean = df_orig.iloc[final_indices]
+    df_clean.to_csv(OUTPUT_CSV, index=False)
+    # 6. Visualisation du nettoyage
+    plot_cleaning_results(all_feats, all_labels, final_indices)
 
-# 4. Filtrage : On garde les points proches du centre de leur classe
-print("Filtering noisy labels...")
-final_indices = []
+    print(f"✅ DONE! Dataset cleaned.")
+    print(f"Original size: {len(df_orig)}")
+    print(f"Cleaned size:  {len(df_clean)} (Removed {len(df_orig) - len(df_clean)} suspicious images)")
 
-for c in range(100): # 100 classes
-    # Récupérer tous les samples de la classe c
-    class_mask = (all_labels == c)
-    class_idxs = all_indices[class_mask]
-    class_feats = all_feats[class_mask]
-
-    if len(class_feats) == 0: continue
-
-    # Calculer le "Centre" de la classe (Prototype)
-    center = np.mean(class_feats, axis=0, keepdims=True)
-    center = center / np.linalg.norm(center) # Re-normaliser le centre
-
-    # Calculer la similarité de chaque image avec le centre
-    # Plus c'est proche de 1, plus l'image est "typique" de la classe
-    similarities = cosine_similarity(class_feats, center).flatten()
-
-    # On trie du plus similaire au moins similaire
-    sorted_local_idx = np.argsort(similarities)[::-1] # Descending
-
-    # On ne garde que le TOP (1 - noise_rate)
-    # Ex: si 100 images, 40% bruit -> on garde les 60 meilleures
-    n_keep = int(len(class_feats) * KEEP_RATIO)
-    # Sécurité: garder au moins 5 images par classe
-    n_keep = max(n_keep, 5) 
-    
-    # Récupérer les index globaux des meilleurs samples
-    best_local_idxs = sorted_local_idx[:n_keep]
-    best_global_idxs = class_idxs[best_local_idxs]
-    
-    final_indices.extend(best_global_idxs)
-
-# 5. Sauvegarde
-df_orig = pd.read_csv(CSV_PATH)
-df_clean = df_orig.iloc[final_indices]
-df_clean.to_csv(OUTPUT_CSV, index=False)
-# 6. Visualisation du nettoyage
-plot_cleaning_results(all_feats, all_labels, final_indices)
-
-print(f"✅ DONE! Dataset cleaned.")
-print(f"Original size: {len(df_orig)}")
-print(f"Cleaned size:  {len(df_clean)} (Removed {len(df_orig) - len(df_clean)} suspicious images)")
+if __name__ == "__main__":
+    main()
