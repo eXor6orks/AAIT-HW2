@@ -135,6 +135,39 @@ val_tf = T.Compose([
 ])
 
 # =========================
+# PREDICTION FUNCTION
+# =========================
+def generate_predictions(model, image_folder, output_path):
+    """Génère les prédictions sur le dataset de test"""
+    model.eval()
+    
+    test_dataset = TestDataset(image_folder, val_tf)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    
+    predictions = []
+    image_ids = []
+    
+    with torch.no_grad():
+        for images, image_paths in tqdm(test_loader, desc="Generating predictions"):
+            images = images.to(DEVICE)
+            outputs = model(images)
+            preds = outputs.argmax(1).cpu().numpy()
+            
+            predictions.extend(preds)
+            image_ids.extend(image_paths)
+    
+    # Créer le DataFrame de soumission au format Kaggle
+    submission_df = pd.DataFrame({
+        'ID': image_ids,
+        'label': predictions
+    })
+    
+    submission_df.to_csv(output_path, index=False)
+    print(f"✅ Predictions saved to {output_path}")
+    print(f"   Format: {len(submission_df)} images with columns ['ID', 'label']")
+    return submission_df
+
+# =========================
 # MAIN TRAINING
 # =========================
 def main():
@@ -213,8 +246,9 @@ def main():
     plot_confusion_matrix(model, val_loader)
 
     print("\n🔮 Generating final submission with TTA...")
-    # Appel de ta fonction generate_predictions_tta (supposée définie comme dans ton message précédent)
-    # generate_predictions_tta(model, "task2/val_data", f"{SAVE_DIR}/submission_clean_tta.csv")
+    
+    model.load_state_dict(torch.load(f"{SAVE_DIR}/best_model.pth"))    
+    submission_df = generate_predictions(model, "task2/test_data/", f"{SAVE_DIR}/submission.csv")
 
 if __name__ == "__main__":
     main()
