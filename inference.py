@@ -13,7 +13,7 @@ from src.model.model import get_model
 # =========================
 NUM_CLASSES = 100
 BATCH_SIZE = 32
-CHECKPOINT_PATH = "checkpoints/student_final_soft.pth"
+CHECKPOINT_PATH = "checkpoints/retrained_student.pth"
 VAL_DIR = "task1/val_data"
 OUTPUT_CSV = "submission.csv"
 
@@ -38,7 +38,7 @@ model.eval()
 # TRANSFORMS
 # =========================
 eval_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((64, 64)),
     transforms.ToTensor(),
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],

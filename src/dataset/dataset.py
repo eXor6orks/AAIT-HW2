@@ -44,25 +44,3 @@ class UnlabeledImageDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         return image, img_path
-
-from PIL import Image
-import torch
-
-class SoftLabeledImageDataset(torch.utils.data.Dataset):
-    def __init__(self, samples, soft_labels, transform=None):
-        self.samples = samples
-        self.soft_labels = soft_labels
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        img_path = self.samples[idx]
-        image = Image.open(img_path).convert("RGB")
-
-        if self.transform:
-            image = self.transform(image)
-
-        label = self.soft_labels[idx]  # Tensor [num_classes]
-        return image, label
